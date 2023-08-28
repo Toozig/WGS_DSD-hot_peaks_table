@@ -58,6 +58,8 @@ This script performs analysis on variant data and pedigree information, calculat
     python script_name.py data/pipeline_outputs/variants_with_layers/qualityDSD_variants.csv data/read_only/samples/sample_metadata.xlsx ~/bcftools_prog/DSD_project/data/hot_peaks_fixed Nitzan_Gonen_lab/Joint_projects/WGS_on_DSD/Ido/hot_peaks
     ```
 
+I tried to fork!
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
