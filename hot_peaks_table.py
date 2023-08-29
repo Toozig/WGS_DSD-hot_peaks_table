@@ -45,6 +45,7 @@ VAR_CSV_PATH = 1
 SAMPLE_MATADTA_PATH = 2
 OUTPUT_PATH = 3
 UPLOAD_PATH = 4
+GENES_LOCATIONS_FILE = "hg38_dsd_genes_locations.bed"
 
 def get_interval_stats(df_in, pedg_df):
     """
@@ -111,8 +112,54 @@ def bool_variant_df(df):
 
 # ... (similar explanations for other functions)
 
+# some rows have a few genes in 'DSDgenes_1.5mb' and this function splits them to several rows
+def handle_multi_gene_rows(df):
+    # Create a copy of the DataFrame to work with
+    new_df = df.copy()
+    df.reset_index(inplace=True)
+    # Split values in 'DSDgenes_1.5mb' column and create new rows
+    new_rows = []
+    for index, row in new_df.iterrows():
+        genes = row['DSDgenes_1.5mb'].split(',')
+        for gene in genes:
+            new_row = row.copy()
+            new_row['DSDgenes_1.5mb'] = gene
+            new_rows.append(new_row)
 
+    # Create a new DataFrame with the updated rows
+    new_df = pd.DataFrame(new_rows, columns=new_df.columns)
+    # Reset the index of 'df' to keep 'INTERVAL_ID' as a regular column
+    new_df = new_df.join(df.set_index(['CHROM', 'from', 'to'])['INTERVAL_ID'], on=['CHROM', 'from', 'to'])
+    return new_df
 
+def calculate_minimal_distance_from_gene(df, locations):
+    # Merge locations with df based on 'DSDgenes_1.5mb'
+    merged_df = df.merge(locations, left_on='DSDgenes_1.5mb', right_on='gene', how='left')
+
+    # Calculate distances
+    merged_df['dist_from_start'] = abs(merged_df['from'] - merged_df['start'])
+    merged_df['dist_from_end'] = abs(merged_df['to'] - merged_df['start'])
+    # Calculate minimum distance from both start and end of gene
+    merged_df['distance_from_nearest_DSD_TSS'] = merged_df[['dist_from_start', 'dist_from_end']].min(axis=1)
+
+    # Drop unnecessary columns
+    result_df = merged_df.drop(columns=['start', 'end', 'gene', 'dist_from_start', 'dist_from_end', 'chr'])
+    return result_df
+
+def add_dsd_distance(df):
+    # Read DSD genes' locations file
+    locations = pd.read_table(GENES_LOCATIONS_FILE)
+    locations.columns = ['chr', 'start', 'end', 'gene']
+    # split df by values in 'DSDgenes_1.5mb'
+    new_df = handle_multi_gene_rows(df)
+
+    result_df = calculate_minimal_distance_from_gene(new_df, locations)
+
+    # Keep only rows with minimal distance from DSD gene
+    result_df = result_df.sort_values(by=['INTERVAL_ID', 'distance_from_nearest_DSD_TSS']).drop_duplicates(subset='INTERVAL_ID')
+    result_df.set_index('INTERVAL_ID', inplace=True)
+    
+    return result_df
 
 def get_info_table(df):
     relevant_coulmns = ['CHROM','from', 'to', 'length', 'DSDgenes_1.5mb','geneHancer', 'GHid', 'GH_is_elite', 'GH_type']
@@ -131,7 +178,7 @@ def main(sample_file_path, pedg_path, output_file, upload_path=None):
     """
     print("Reading files")
     # Read sample data from CSV and pedigree data from Excel
-    df = pd.read_csv(sample_file_path)
+    df = pd.read_csv(sample_file_path, encoding='latin1')
     pedg_df = pd.read_excel(pedg_path)
     
     print("Analyzing peaks")
@@ -141,10 +188,11 @@ def main(sample_file_path, pedg_path, output_file, upload_path=None):
     
     # Combine interval information and analysis results
     result = pd.concat([get_info_table(df), peak_df], axis=1)
-    
+    added_result = add_dsd_distance(result)
+
     print("Saving")
     # Create and save an Excel file with the analysis results
-    save_to_excel(result, pedg_df, output_file, upload_path)
+    save_to_excel(added_result, pedg_df, output_file, upload_path)
 
 
 
@@ -165,7 +213,7 @@ def create_sample_dict(pedg_df,columns):
 
 def save_to_excel(result, pedg_df, output_file, upload_path):
     interval_dict = {'Peak' : ['CHROM','from','to','length'],
-                    'Gene data': ['DSDgenes_1.5mb','geneHancer','GHid','GH_is_elite','GH_type']}
+                    'Gene data': ['distance_from_nearest_DSD_TSS','DSDgenes_1.5mb','geneHancer','GHid','GH_is_elite','GH_type']}
     interval_dict.update(create_sample_dict(pedg_df, result.columns))
     gf.create_excel(result, interval_dict, output_file, upload_path=upload_path)
 
