@@ -1,0 +1,60 @@
+#!/bin/bash
+
+# Script: getSamples.sh
+# Description: turns a sample VCF file into a TSV, adds some layer data 
+# Usage: bash getSamples.sh <chrom> <sample.vcf.bgz> <peaks.bed>
+
+chrom=$1
+SAMPLE_PATH=$2
+CHR_REGION=$3
+
+sample_name=`basename "$SAMPLE_PATH .txt"`
+region_name=`basename "$CHR_REGION .bed"`
+
+output="${region_name}.${region_name}.${chrom}.tsv"
+region_header='headers/interval_ID.header'
+region_format='CHROM,FROM,TO,INTERVAL_ID'
+RM_bed='data/read_only/layers_data/repeatsMasker.bed'
+RM_header='headers/repeatsMasker.header'
+RM_format='CHROM,FROM,TO,RM_ID,RM_LENGTH,RM_STRAND'
+
+GH_bed='data/read_only/layers_data/geneHancer_AnnotSV_elements.bed'
+GH_header='headers/geneHancer_AnnotSV_elements.header'
+GH_format='CHROM,FROM,TO,GHid,GH_is_elite,GH_type'
+FORMAT="%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%AF\t%AF_popmax\t%ANN\t%INTERVAL_ID\t%RM_ID\t%GHid\t%GH_is_elite\t%GH_type[\t%GT\t%DP\t%GQ]\n"
+GREP_CHROM=/grep -E '^$chrom\b'/
+
+check_exit_code() {
+  if [ \$? -ne 0 ]; then # \$? refferes to the previous exit code, 0 means it ended well
+   
+    exit 1
+  fi
+}
+
+# loading the neccesery modules
+module load hurcs bcftools
+check_exit_code "module load"
+
+
+bcftools merge -l $SAMPLE_PATH -R $CHR_REGION | \   # merge all vcf samples into one vcf
+ bcftools annotate -a $CHR_REGION -h $region_header -c $region_format | \   # adds peaks information
+ bcftools annotate -a $RM_bed -h $RM_header -c $RM_format  | \   # adds repeatmasker information
+ bcftools annotate -a $GH_bed -h $GH_header -c $GH_format  | \   # adds GeneHHancer information
+ bcftools norm -m - | \  # split variants on the same position to different lines
+ bcftools query  -H -f "$FORMAT" | \  # make table out of the vcf
+ awk '{ for (i = 14; i <= NF; i++) { if ($i != ".") { print; break } } }'  > $output   # remove rows with no variants (might be unnecessery )
+check_exit_code "bcftools merge samples"
+
+
+## the following code changes the header of the files
+
+# Read the first line from the file
+first_line=$(head -n 1 "$output" | sed 's/\[[0-9]*\]//g' | sed 's/^#\s*//')
+
+echo $first_line
+# Replace spaces with tabs
+new_line="${first_line// /\\t}"
+
+# Replace the first line in the file with the modified line
+
+sed -i "1s/.*/$new_line/" $output
