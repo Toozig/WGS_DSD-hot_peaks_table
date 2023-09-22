@@ -45,6 +45,7 @@ VAR_CSV_PATH = 1
 SAMPLE_MATADTA_PATH = 2
 OUTPUT_PATH = 3
 UPLOAD_PATH = 4
+GENES_LOCATIONS_FILE = "data/read_only/layers_data/hg38_dsd_genes_locations.bed"
 
 def get_interval_stats(df_in, pedg_df):
     """
@@ -111,8 +112,51 @@ def bool_variant_df(df):
 
 # ... (similar explanations for other functions)
 
+def split_by_gene(x):
+      splitted_genes = x['DSDgenes_1.5mb'].split(',')
+      new_df = pd.DataFrame({'DSDgenes_1.5mb': splitted_genes})
+      new_df['DSDgenes_1.5mb'] = pd.Series(splitted_genes)
+      return new_df['DSDgenes_1.5mb'][0]
 
+# some rows have a few genes in 'DSDgenes_1.5mb' and this function splits them to several rows
+def handle_multi_gene_rows(df):
+    # Create a copy of the DataFrame to work with
+    new_df = df.copy()
+    new_rows = new_df.apply(lambda x: split_by_gene(x) if pd.notna(x['DSDgenes_1.5mb']) else None, axis=1)
+    # Create a new DataFrame with the updated rows
+    new_rows = new_rows.reset_index(drop=True)
+    new_df['DSDgenes_1.5mb'] = new_rows
+    return new_df
 
+def calculate_minimal_distance_from_gene(df, locations):
+    df['DSDgenes_1.5mb'] = df['DSDgenes_1.5mb'].astype(str)
+    locations['gene'] = locations['gene'].astype(str)
+    # Merge locations with df based on 'DSDgenes_1.5mb'
+    merged_df = df.merge(locations, left_on='DSDgenes_1.5mb', right_on='gene', how='left')
+
+    # Calculate distances
+    merged_df['dist_from_start'] = abs(merged_df['from'] - merged_df['start'])
+    merged_df['dist_from_end'] = abs(merged_df['to'] - merged_df['start'])
+    # Calculate minimum distance from both start and end of gene
+    merged_df['distance_from_nearest_DSD_TSS'] = merged_df[['dist_from_start', 'dist_from_end']].min(axis=1)
+
+    # Drop unnecessary columns
+    result_df = merged_df.drop(columns=['start', 'end', 'gene', 'dist_from_start', 'dist_from_end', 'chr'])
+    return result_df
+
+def add_dsd_distance(df):
+    df.reset_index(inplace=True)
+    # Read DSD genes' locations file
+    locations = pd.read_table(GENES_LOCATIONS_FILE)
+    locations.columns = ['chr', 'start', 'end', 'gene']
+    # split df by values in 'DSDgenes_1.5mb'
+    new_df = handle_multi_gene_rows(df)
+    result_df = calculate_minimal_distance_from_gene(new_df, locations)
+    # Keep only rows with minimal distance from DSD gene
+    result_df = result_df.sort_values(by=['INTERVAL_ID', 'distance_from_nearest_DSD_TSS']).drop_duplicates(subset='INTERVAL_ID')
+    result_df.set_index('INTERVAL_ID', inplace=True)
+    
+    return result_df
 
 def get_info_table(df):
     relevant_coulmns = ['CHROM','from', 'to', 'length', 'DSDgenes_1.5mb','geneHancer', 'GHid', 'GH_is_elite', 'GH_type']
@@ -131,7 +175,7 @@ def main(sample_file_path, pedg_path, output_file, upload_path=None):
     """
     print("Reading files")
     # Read sample data from CSV and pedigree data from Excel
-    df = pd.read_csv(sample_file_path)
+    df = pd.read_csv(sample_file_path, encoding='latin1')
     pedg_df = pd.read_excel(pedg_path)
     
     print("Analyzing peaks")
@@ -141,11 +185,12 @@ def main(sample_file_path, pedg_path, output_file, upload_path=None):
     
     # Combine interval information and analysis results
     result = pd.concat([get_info_table(df), peak_df], axis=1)
-    
+
+    added_result = add_dsd_distance(result)
+
     print("Saving")
     # Create and save an Excel file with the analysis results
-    save_to_excel(result, pedg_df, output_file, upload_path)
-
+    save_to_excel(added_result, pedg_df, output_file, upload_path)
 
 
 def get_sample_numbers(pedg_df, source=None):
@@ -165,7 +210,7 @@ def create_sample_dict(pedg_df,columns):
 
 def save_to_excel(result, pedg_df, output_file, upload_path):
     interval_dict = {'Peak' : ['CHROM','from','to','length'],
-                    'Gene data': ['DSDgenes_1.5mb','geneHancer','GHid','GH_is_elite','GH_type']}
+                    'Gene data': ['distance_from_nearest_DSD_TSS','DSDgenes_1.5mb','geneHancer','GHid','GH_is_elite','GH_type']}
     interval_dict.update(create_sample_dict(pedg_df, result.columns))
     gf.create_excel(result, interval_dict, output_file, upload_path=upload_path)
 
@@ -189,7 +234,7 @@ def create_folders_if_not_exist(file_path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
-        print("Usage: python hot_peaks_table.py.py VAR_CSV_PATH SAMPLE_MATADTA_PATH OUTPUT_PATH [UPLOAD_PATH]")
+        print("Usage: python hot_peaks_table.py VAR_CSV_PATH SAMPLE_MATADTA_PATH OUTPUT_PATH [UPLOAD_PATH]")
         sys.exit(1)
 
     # Get the command line arguments
